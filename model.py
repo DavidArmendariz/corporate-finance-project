@@ -1,7 +1,7 @@
 """Parametrized model of "VPN del Proyecto" from Taller_final.xlsx.
 
 This is a pure-Python reimplementation of the cash-flow chain behind
-`Estado de resultados!C71`, exposing the decision variables the user wants to
+`Estado de resultados!C68`, exposing the decision variables the user wants to
 optimize as `Levers`. All other inputs are read once from the workbook as
 `FixedParams` so the model stays in sync with the spreadsheet.
 
@@ -48,6 +48,7 @@ class FixedParams:
     depre_annual: float             # constant per year (Depreciaciones!B7)
     capex_total_mm: float           # Datos!C10 (millones de COP)
     pct_overhaul: float             # Datos!C24 (year-5 renovation, of initial capex)
+    multa_base: float               # Datos!C19 * 1e6 (Costo de oportunidad!B18 penalty)
     # Salvage (Año 11) constants
     pct_venta_activos: float        # ES!P37
     pct_desmantelamiento: float     # ES!P38
@@ -132,6 +133,7 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
         depre_annual=depre_annual,
         capex_total_mm=d["C10"].value,
         pct_overhaul=d["C24"].value,
+        multa_base=d["C19"].value * 1_000_000,
         pct_venta_activos=es["P38"].value,
         pct_desmantelamiento=es["P39"].value,
         tax_ganancia_ocasional=es["P40"].value,
@@ -159,20 +161,60 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
     return fixed, base_levers
 
 
+@dataclass
+class NominaRole:
+    """One row of the Nómina roster (Nómina!A3:E17)."""
+
+    cargo: str            # Nómina col A
+    count: int            # Nómina col B (No)
+    salario_mes: float    # Nómina col C (Salario / Mes, millones de COP)
+    es_produccion: bool   # Nómina col E ("SI" -> operativa, "NO" -> administrativa)
+
+
+def load_nomina_roster(path: str = WORKBOOK_PATH) -> list[NominaRole]:
+    """Read the 15 nómina roles (Nómina!A3:E17) feeding H3/H4."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    nom = wb["Nómina"]
+    roster = []
+    for r in range(3, 18):  # rows 3..17
+        cargo = nom.cell(row=r, column=1).value
+        count = nom.cell(row=r, column=2).value
+        salario_mes = nom.cell(row=r, column=3).value
+        flag = nom.cell(row=r, column=5).value
+        roster.append(
+            NominaRole(
+                cargo=str(cargo),
+                count=int(count),
+                salario_mes=float(salario_mes),
+                es_produccion=str(flag).strip().upper() == "SI",
+            )
+        )
+    return roster
+
+
+def nomina_bases(roster: list[NominaRole]) -> tuple[float, float]:
+    """Return (operativa, administrativa) annual bases in COP, mirroring Nómina!H3/H4.
+
+    Annual salary per role = count * salario_mes * 12 (millones), summed by SI/NO and
+    scaled to COP. SI roles feed nómina operativa; NO roles feed nómina administrativa.
+    """
+    oper = sum(r.count * r.salario_mes * 12 for r in roster if r.es_produccion) * 1e6
+    admin = sum(r.count * r.salario_mes * 12 for r in roster if not r.es_produccion) * 1e6
+    return oper, admin
+
+
 def debt_schedule_interest(pct_d: float, fixed: FixedParams) -> list[float]:
     """Return the 10 annual interest figures used by ES gastos financieros
-    (Bancos!Y22:Y31, in millones de COP).
+    (Bancos!J20:J29, in millones de COP).
 
     Loan = Datos!C10 * %D (in millones). Quarterly vencido rate from Bancos!B8.
     Amortization: Año 1 = grace (0); Años 2-9 = 10%/yr (2.5%/quarter);
     Año 10 = 20%/yr (5%/quarter); interest is charged on the period's opening
     balance.
 
-    Quirk replicated deliberately: the workbook's RESUMEN ANUAL sums the quarterly
-    interest with SUMIF over Bancos rows 22..61 — but the quarterly table starts
-    at row 20, so Año 1 OMITS its first two quarters. The result feeds
-    `ES!D27 = TRANSPOSE(Bancos!Y22:Y31)*100000` (see compute_model for the
-    ×100000 scaling). We reproduce both to match Excel exactly.
+    Each year's interest sums ALL four of its quarters (Bancos!J20 = SUM(D20:D23),
+    etc.). The result feeds `ES!D27 = TRANSPOSE(Bancos!J20:J29)*100000` (see
+    compute_model for the ×100000 scaling), which reproduces Excel's VPN exactly.
     """
     loan = fixed.capex_total_mm * pct_d  # Bancos!B12, in millones
     tasa_ta = fixed.dtf + fixed.spread
@@ -191,11 +233,62 @@ def debt_schedule_interest(pct_d: float, fixed: FixedParams) -> list[float]:
             amort = loan * 0.2 / 4
         saldo -= amort
 
-    # RESUMEN ANUAL SUMIF starts at row 22 (quarter index 2): Año 1 loses q0,q1.
     annual_interest = [0.0] * N_YEARS
-    for q in range(2, 40):
+    for q in range(40):
         annual_interest[q // 4] += quarterly[q]
     return annual_interest
+
+
+def debt_schedule_annual(pct_d: float, fixed: FixedParams) -> tuple[list[float], list[float]]:
+    """Return (servicio_deuda, deuda) per year, in COP — Bancos RESUMEN ANUAL L20:L29 / M20:M29.
+
+    `servicio` (Pago Total, col L) = full annual interest + amortization, summing ALL four
+    quarters of every year (no row-22 omission, unlike `debt_schedule_interest`). `deuda`
+    (Saldo Final, col M) = year-end balance = the last quarter's closing balance.
+    Both feed ES rows 87 (servicio) and 89 (deuda), scaled by 1e6.
+    """
+    loan = fixed.capex_total_mm * pct_d  # Bancos!B12, in millones
+    tasa_ta = fixed.dtf + fixed.spread
+    trim_venc = (tasa_ta / 4) / (1 - tasa_ta / 4)  # B8
+
+    servicio = [0.0] * N_YEARS
+    deuda = [0.0] * N_YEARS
+    saldo = loan
+    for q in range(40):
+        year = q // 4 + 1
+        interes = saldo * trim_venc
+        if year == 1:
+            amort = 0.0
+        elif year < 10:
+            amort = loan * 0.1 / 4
+        else:
+            amort = loan * 0.2 / 4
+        servicio[year - 1] += interes + amort
+        saldo -= amort
+        deuda[year - 1] = saldo  # last write per year = year-end Saldo Final
+
+    return [s * 1e6 for s in servicio], [d * 1e6 for d in deuda]
+
+
+# Per-year indicators graphed in the app (order matches the dashboard layout).
+# kind: "pct" | "millones" | "x"  ·  chart: "line" | "bar"
+METRIC_SPECS = [
+    {"key": "eva", "title": "EVA", "kind": "millones", "chart": "line"},
+    {"key": "roic", "title": "ROIC", "kind": "pct", "chart": "line"},
+    {"key": "ebitda", "title": "EBITDA", "kind": "millones", "chart": "line"},
+    {"key": "margen_bruto", "title": "Margen bruto", "kind": "pct", "chart": "bar"},
+    {"key": "ktno", "title": "KTNO", "kind": "millones", "chart": "line"},
+    {"key": "palanca", "title": "Palanca de crecimiento", "kind": "x", "chart": "bar"},
+    {"key": "margen_ebitda", "title": "Margen EBITDA", "kind": "pct", "chart": "bar"},
+    {"key": "margen_ebit", "title": "Margen EBIT", "kind": "pct", "chart": "bar"},
+    {"key": "margen_ktno", "title": "Productividad del capital de trabajo",
+     "kind": "pct", "chart": "bar"},
+    {"key": "cobertura_intereses", "title": "Razón de cobertura de intereses",
+     "kind": "x", "chart": "bar"},
+    {"key": "dscr", "title": "Razón de cobertura de servicio a la deuda",
+     "kind": "x", "chart": "bar"},
+    {"key": "apalancamiento", "title": "Apalancamiento financiero", "kind": "x", "chart": "bar"},
+]
 
 
 def wacc(pct_e: float, pct_d: float, fixed: FixedParams) -> float:
@@ -218,6 +311,7 @@ class ModelResult:
     wacc: float
     fcl_unlevered: list[float]  # C64 .. N64 (years 0..11), 12 values
     salvage: float
+    metrics: dict[str, list[float]]  # per-year indicators (keys in METRIC_SPECS), 10 values each
 
 
 def compute_model(levers: Levers, fixed: FixedParams) -> ModelResult:
@@ -275,7 +369,7 @@ def compute_model(levers: Levers, fixed: FixedParams) -> ModelResult:
 
     # --- Levered branch feeding KTNO via Impuestos por pagar ---
     interest_mm = debt_schedule_interest(levers.pct_d, fixed)
-    # ES!D27 = TRANSPOSE(Bancos!Y22:Y31)*100000 (the sheet scales by 1e5, not 1e6).
+    # ES!D27 = TRANSPOSE(Bancos!J20:J29)*100000 (the sheet scales by 1e5, not 1e6).
     gastos_fin = [interest_mm[j] * 100_000 for j in range(n)]             # row 27
     ebt = [ebit[j] - gastos_fin[j] for j in range(n)]                    # row 28
     impuestos_por_pagar = [max(0.0, ebt[j] * tax) for j in range(n)]     # rows 29/37
@@ -304,7 +398,43 @@ def compute_model(levers: Levers, fixed: FixedParams) -> ModelResult:
     npv = sum(fcl_unlevered[k] / (1 + w) ** k for k in range(1, len(fcl_unlevered)))
     vpn = npv + fcl_unlevered[0]
 
-    return ModelResult(vpn=vpn, wacc=w, fcl_unlevered=fcl_unlevered, salvage=fixed.salvage)
+    # --- Per-year financial indicators (ES rows 32, 38, 77-90) ---
+    def _div(a: float, b: float) -> float:
+        return a / b if b else float("nan")
+
+    ebitda = [ebit[j] + depre + amort for j in range(n)]                 # row 32
+    ppe_neta = [fixed.capex_total - depre * (j + 1) for j in range(n)]   # row 43
+    capital_invertido = [ppe_neta[j] + ktno[j] for j in range(n)]        # row 45
+    roic = [_div(nopat[j], capital_invertido[j]) for j in range(n)]      # row 77
+    eva = [(roic[j] - w) * capital_invertido[j] for j in range(n)]       # row 84
+    margen_bruto = [_div(utilidad_bruta[j], ingresos[j]) for j in range(n)]  # row 78
+    margen_ebit = [_div(ebit[j], ingresos[j]) for j in range(n)]         # row 79
+    margen_ebitda = [_div(ebitda[j], ingresos[j]) for j in range(n)]     # row 80
+    margen_ktno = [_div(ktno[j], ingresos[j]) for j in range(n)]         # row 81
+    palanca = [_div(margen_ebitda[j], margen_ktno[j]) for j in range(n)]  # row 83
+    cobertura_intereses = [_div(ebit[j], gastos_fin[j]) for j in range(n)]  # row 86
+    servicio, deuda = debt_schedule_annual(levers.pct_d, fixed)          # rows 87, 89
+    dscr = [_div(fcl[j], servicio[j]) for j in range(n)]                 # row 88
+    apalancamiento = [_div(deuda[j], ebitda[j]) for j in range(n)]       # row 90
+
+    metrics = {
+        "eva": eva,
+        "roic": roic,
+        "ebitda": ebitda,
+        "margen_bruto": margen_bruto,
+        "ktno": ktno,
+        "palanca": palanca,
+        "margen_ebitda": margen_ebitda,
+        "margen_ebit": margen_ebit,
+        "margen_ktno": margen_ktno,
+        "cobertura_intereses": cobertura_intereses,
+        "dscr": dscr,
+        "apalancamiento": apalancamiento,
+    }
+
+    return ModelResult(
+        vpn=vpn, wacc=w, fcl_unlevered=fcl_unlevered, salvage=fixed.salvage, metrics=metrics
+    )
 
 
 def compute_vpn(levers: Levers, fixed: FixedParams) -> float:
@@ -313,20 +443,20 @@ def compute_vpn(levers: Levers, fixed: FixedParams) -> float:
 
 
 # --- Cached Excel values used to validate the reimplementation ---
-EXCEL_VPN = 31_891_803_211.901283  # ES!C71
+EXCEL_VPN = 30_543_121_707.124863  # ES!C68
 EXCEL_WACC = 0.2038878535096088    # WACC!B18
 EXCEL_FCL64 = [                     # ES!C64:N64 (years 0..11)
     -14_000_000_000,
-    1_420_030_580.8386383,
-    11_368_476_837.27574,
-    10_038_733_589.488277,
-    11_710_421_704.97671,
-    3_807_668_734.0067616,
-    15_753_856_566.218775,
-    18_142_653_626.864143,
-    20_873_115_666.54428,
-    24_000_254_096.913265,
-    27_545_768_132.103878,
+    563_061_161.6772768,
+    9_322_293_156.437101,
+    10_284_879_024.385878,
+    11_977_118_379.842709,
+    4_094_133_442.364683,
+    16_060_378_343.514023,
+    18_476_932_116.974094,
+    21_220_267_623.36258,
+    24_353_026_023.085163,
+    27_908_241_947.262756,
     2_730_000_000,
 ]
 EXCEL_SALVAGE = 2_730_000_000.0
