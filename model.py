@@ -1,7 +1,7 @@
 """Parametrized model of "VPN del Proyecto" from Taller_final.xlsx.
 
 This is a pure-Python reimplementation of the cash-flow chain behind
-`Estado de resultados!C66`, exposing the decision variables the user wants to
+`Estado de resultados!C71`, exposing the decision variables the user wants to
 optimize as `Levers`. All other inputs are read once from the workbook as
 `FixedParams` so the model stays in sync with the spreadsheet.
 
@@ -10,11 +10,17 @@ The model reproduces Excel's cached VPN exactly (see `validate()` at the bottom)
 Non-obvious behavior replicated deliberately: `%D` (porcentaje de deuda) affects
 VPN through TWO channels:
   - the WACC discount rate, and
-  - `Impuestos por pagar` (row 36 = row 28), which is computed on EBT
+  - `Impuestos por pagar` (row 37 = row 29), which is computed on EBT
     (= EBIT - Gastos financieros). Gastos financieros come from the Bancos
     debt schedule sized by `%D`, so debt flows into the FCL via KTNO.
-NOPAT itself uses the *unlevered* operative tax (row 49). The model keeps this
+NOPAT itself uses the *unlevered* operative tax (row 50). The model keeps this
 mix of levered/unlevered tax exactly as the sheet does.
+
+`Gastos por seguro` (row 25) is a constant per-year EBIT expense
+(= capex_total * pct_seguro / 5, the insurance premium amortized over 5 years
+sourced from `Amortización gasto seguro`). Unlike depreciation/amortization it
+is NOT added back in the cash flow (it is a cash cost). `Amortización` (row 23)
+is now zero. Both `Comisiones` and `Porcentaje de seguro` are decision levers.
 """
 
 from __future__ import annotations
@@ -39,9 +45,7 @@ class FixedParams:
     nomina_admin_base: float        # Nómina!H4 (grows by inflation)
     pct_mantenimiento: float        # Datos!C21 (of revenue)
     pct_gastos_op_var: float        # Datos!C26 (of revenue)
-    pct_comisiones: float           # Datos!C27 (of revenue)
     depre_annual: float             # constant per year (Depreciaciones!B7)
-    amort_annual: float             # constant per year (Amortización!B4)
     capex_total_mm: float           # Datos!C10 (millones de COP)
     pct_overhaul: float             # Datos!C24 (year-5 renovation, of initial capex)
     # Salvage (Año 11) constants
@@ -74,14 +78,14 @@ class FixedParams:
 
     @property
     def salvage(self) -> float:
-        """ES!P48 — Año-11 cash flow from asset disposal. Independent of levers."""
-        valor_venta = self.capex_total * self.pct_venta_activos          # P41
-        ppe_neta_10 = self.capex_total - N_YEARS * self.depre_annual     # M42
-        utilidad = valor_venta - ppe_neta_10                             # P43
-        impuesto = max(0.0, utilidad * self.tax_ganancia_ocasional)      # P44
-        flujo_venta = valor_venta - impuesto                            # P46
-        desmantelamiento = self.capex_total_mm * self.pct_desmantelamiento * 1_000_000  # P47
-        return flujo_venta - desmantelamiento                           # P48
+        """ES!P49 — Año-11 cash flow from asset disposal. Independent of levers."""
+        valor_venta = self.capex_total * self.pct_venta_activos          # P42
+        ppe_neta_10 = self.capex_total - N_YEARS * self.depre_annual     # M43
+        utilidad = valor_venta - ppe_neta_10                             # P44
+        impuesto = max(0.0, utilidad * self.tax_ganancia_ocasional)      # P45
+        flujo_venta = valor_venta - impuesto                            # P47
+        desmantelamiento = self.capex_total_mm * self.pct_desmantelamiento * 1_000_000  # P48
+        return flujo_venta - desmantelamiento                           # P49
 
 
 @dataclass
@@ -94,6 +98,8 @@ class Levers:
     cxc_dias: float                 # Datos!C28
     cxp_dias: float                 # Datos!C29
     g_real_precio: float            # Datos!C31, real annual price growth
+    pct_comisiones: float           # Datos!C27 (of revenue)
+    pct_seguro: float               # Datos!C25 (insurance, of initial capex)
     cantidades: list[float] = field(default_factory=list)  # ES!D10:M10 (10 values)
 
 
@@ -113,7 +119,6 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
         d.cell(row=r, column=3).value * 1_000_000 / d.cell(row=r, column=5).value
         for r in range(5, 10)  # Datos C5:C9 / E5:E9
     )
-    amort_annual = 1_000_000 * d["C10"].value * d["C25"].value / 5
 
     fixed = FixedParams(
         inflation=inflation,
@@ -124,14 +129,12 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
         nomina_admin_base=nom["H4"].value,
         pct_mantenimiento=d["C21"].value,
         pct_gastos_op_var=d["C26"].value,
-        pct_comisiones=d["C27"].value,
         depre_annual=depre_annual,
-        amort_annual=amort_annual,
         capex_total_mm=d["C10"].value,
         pct_overhaul=d["C24"].value,
-        pct_venta_activos=es["P37"].value,
-        pct_desmantelamiento=es["P38"].value,
-        tax_ganancia_ocasional=es["P39"].value,
+        pct_venta_activos=es["P38"].value,
+        pct_desmantelamiento=es["P39"].value,
+        tax_ganancia_ocasional=es["P40"].value,
         rf=w["B1"].value,
         market_return=w["B2"].value,
         beta_l=w["B4"].value,
@@ -149,27 +152,37 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
         cxc_dias=d["C28"].value,
         cxp_dias=d["C29"].value,
         g_real_precio=d["C31"].value,
+        pct_comisiones=d["C27"].value,
+        pct_seguro=d["C25"].value,
         cantidades=[es.cell(row=10, column=col).value for col in range(4, 4 + N_YEARS)],
     )
     return fixed, base_levers
 
 
 def debt_schedule_interest(pct_d: float, fixed: FixedParams) -> list[float]:
-    """Reproduce Bancos rows 20-59 and return the 10 annual interest figures (J20:J29).
+    """Return the 10 annual interest figures used by ES gastos financieros
+    (Bancos!Y22:Y31, in millones de COP).
 
     Loan = Datos!C10 * %D (in millones). Quarterly vencido rate from Bancos!B8.
     Amortization: Año 1 = grace (0); Años 2-9 = 10%/yr (2.5%/quarter);
-    Año 10 = 20%/yr (5%/quarter).
+    Año 10 = 20%/yr (5%/quarter); interest is charged on the period's opening
+    balance.
+
+    Quirk replicated deliberately: the workbook's RESUMEN ANUAL sums the quarterly
+    interest with SUMIF over Bancos rows 22..61 — but the quarterly table starts
+    at row 20, so Año 1 OMITS its first two quarters. The result feeds
+    `ES!D27 = TRANSPOSE(Bancos!Y22:Y31)*100000` (see compute_model for the
+    ×100000 scaling). We reproduce both to match Excel exactly.
     """
     loan = fixed.capex_total_mm * pct_d  # Bancos!B12, in millones
     tasa_ta = fixed.dtf + fixed.spread
     trim_venc = (tasa_ta / 4) / (1 - tasa_ta / 4)  # B8
 
-    annual_interest = [0.0] * N_YEARS
+    quarterly = [0.0] * 40
     saldo = loan
-    for q in range(1, 41):  # 40 quarters (rows 20..59)
-        year = (q - 1) // 4 + 1  # Bancos column B (1..10)
-        interes = saldo * trim_venc
+    for q in range(40):  # 0-indexed quarters (Bancos rows 20..59)
+        year = q // 4 + 1  # Bancos column B (1..10)
+        quarterly[q] = saldo * trim_venc  # interest on opening balance
         if year == 1:
             amort = 0.0
         elif year < 10:
@@ -177,7 +190,11 @@ def debt_schedule_interest(pct_d: float, fixed: FixedParams) -> list[float]:
         else:
             amort = loan * 0.2 / 4
         saldo -= amort
-        annual_interest[year - 1] += interes
+
+    # RESUMEN ANUAL SUMIF starts at row 22 (quarter index 2): Año 1 loses q0,q1.
+    annual_interest = [0.0] * N_YEARS
+    for q in range(2, 40):
+        annual_interest[q // 4] += quarterly[q]
     return annual_interest
 
 
@@ -199,7 +216,7 @@ def wacc(pct_e: float, pct_d: float, fixed: FixedParams) -> float:
 class ModelResult:
     vpn: float
     wacc: float
-    fcl_unlevered: list[float]  # C63 .. N63 (years 0..11), 12 values
+    fcl_unlevered: list[float]  # C64 .. N64 (years 0..11), 12 values
     salvage: float
 
 
@@ -237,44 +254,52 @@ def compute_model(levers: Levers, fixed: FixedParams) -> ModelResult:
         ingresos[j] - costo_ventas[j] - nom_oper[j] - mantenimiento[j] for j in range(n)
     ]  # row 19
     gastos_op_var = [ing * fixed.pct_gastos_op_var for ing in ingresos]   # row 21
-    comisiones = [ing * fixed.pct_comisiones for ing in ingresos]         # row 24
+    comisiones = [ing * levers.pct_comisiones for ing in ingresos]        # row 24
     depre = fixed.depre_annual
-    amort = fixed.amort_annual
+    amort = 0.0                                                           # row 23 (== ES!D23)
+    # Gastos por seguro (row 25): insurance premium amortized over 5 years (280M/yr).
+    # Quirk replicated deliberately: only the Año-1 EBIT formula subtracts it
+    # (D26 = D19-...-D25); E26:M26 omit the seguro term, so the workbook deducts
+    # insurance in Año 1 only. seguro[j] = expense for j==0, else 0.
+    gasto_seguro = fixed.capex_total_mm * levers.pct_seguro * 1_000_000 / 5
+    seguro = [gasto_seguro] + [0.0] * (n - 1)
 
     ebit = [
-        utilidad_bruta[j] - nom_admin[j] - gastos_op_var[j] - depre - amort - comisiones[j]
+        utilidad_bruta[j] - nom_admin[j] - gastos_op_var[j]
+        - depre - amort - comisiones[j] - seguro[j]
         for j in range(n)
-    ]  # row 25
-    impuestos_op = [max(0.0, ebit[j] * tax) for j in range(n)]            # row 49 (unlevered)
-    nopat = [ebit[j] - impuestos_op[j] for j in range(n)]                 # row 50
-    flujo_caja_bruto = [nopat[j] + depre + amort for j in range(n)]       # rows 53/59
+    ]  # row 26 (D26 includes -D25 seguro; E26:M26 omit it)
+    impuestos_op = [max(0.0, ebit[j] * tax) for j in range(n)]            # row 50 (unlevered)
+    nopat = [ebit[j] - impuestos_op[j] for j in range(n)]                 # row 51
+    flujo_caja_bruto = [nopat[j] + depre + amort for j in range(n)]       # rows 54/60
 
     # --- Levered branch feeding KTNO via Impuestos por pagar ---
     interest_mm = debt_schedule_interest(levers.pct_d, fixed)
-    gastos_fin = [interest_mm[j] * 1_000_000 for j in range(n)]           # row 26 (millones -> COP)
-    ebt = [ebit[j] - gastos_fin[j] for j in range(n)]                    # row 27
-    impuestos_por_pagar = [max(0.0, ebt[j] * tax) for j in range(n)]     # rows 28/36
+    # ES!D27 = TRANSPOSE(Bancos!Y22:Y31)*100000 (the sheet scales by 1e5, not 1e6).
+    gastos_fin = [interest_mm[j] * 100_000 for j in range(n)]             # row 27
+    ebt = [ebit[j] - gastos_fin[j] for j in range(n)]                    # row 28
+    impuestos_por_pagar = [max(0.0, ebt[j] * tax) for j in range(n)]     # rows 29/37
 
-    cxc = [(levers.cxc_dias / 360) * ingresos[j] for j in range(n)]      # row 33 (= KTO row 34)
-    cxp = [(levers.cxp_dias / 360) * costo_ventas[j] for j in range(n)]  # row 35
-    ktno = [cxc[j] - cxp[j] - impuestos_por_pagar[j] for j in range(n)]  # row 37
+    cxc = [(levers.cxc_dias / 360) * ingresos[j] for j in range(n)]      # row 34 (= KTO row 35)
+    cxp = [(levers.cxp_dias / 360) * costo_ventas[j] for j in range(n)]  # row 36
+    ktno = [cxc[j] - cxp[j] - impuestos_por_pagar[j] for j in range(n)]  # row 38
 
-    d_ktno = [0.0] * n  # row 38
+    d_ktno = [0.0] * n  # row 39
     d_ktno[0] = ktno[0]
     for j in range(1, n):
         d_ktno[j] = ktno[j] - ktno[j - 1]
 
-    fcl = [flujo_caja_bruto[j] - d_ktno[j] for j in range(n)]            # row 61
+    fcl = [flujo_caja_bruto[j] - d_ktno[j] for j in range(n)]            # row 62
 
-    # CAPEX (row 62): year0 = -total; year5 (Año 5 = index 4) = overhaul; else 0
+    # CAPEX (row 63): year0 = -total; year5 (Año 5 = index 4) = overhaul; else 0
     capex = [0.0] * n
     capex[4] = -fixed.capex_total * fixed.pct_overhaul
     capex0 = -fixed.capex_total
 
-    # FCL unlevered (row 63): years 0..10 then salvage as year 11
+    # FCL unlevered (row 64): years 0..10 then salvage as year 11
     fcl_unlevered = [capex0] + [fcl[j] + capex[j] for j in range(n)] + [fixed.salvage]
 
-    # VPN (C66): NPV of years 1..11 at WACC, plus undiscounted year 0
+    # VPN (C71): NPV of years 1..11 at WACC, plus undiscounted year 0
     w = wacc(levers.pct_e, levers.pct_d, fixed)
     npv = sum(fcl_unlevered[k] / (1 + w) ** k for k in range(1, len(fcl_unlevered)))
     vpn = npv + fcl_unlevered[0]
@@ -288,20 +313,20 @@ def compute_vpn(levers: Levers, fixed: FixedParams) -> float:
 
 
 # --- Cached Excel values used to validate the reimplementation ---
-EXCEL_VPN = -12_640_745_057.294985
-EXCEL_WACC = 0.20737679910341045
-EXCEL_FCL63 = [
+EXCEL_VPN = 31_891_803_211.901283  # ES!C71
+EXCEL_WACC = 0.2038878535096088    # WACC!B18
+EXCEL_FCL64 = [                     # ES!C64:N64 (years 0..11)
     -14_000_000_000,
-    -1_571_666_666.6666667,
-    -7_503_113.333333731,
-    95_032_008.81467843,
-    607_199_130.7679977,
-    -7_961_454_941.71465,
-    2_086_157_052.961433,
-    3_687_098_554.302073,
-    5_560_396_345.043389,
-    6_214_143_201.963727,
-    6_949_544_636.733009,
+    1_420_030_580.8386383,
+    11_368_476_837.27574,
+    10_038_733_589.488277,
+    11_710_421_704.97671,
+    3_807_668_734.0067616,
+    15_753_856_566.218775,
+    18_142_653_626.864143,
+    20_873_115_666.54428,
+    24_000_254_096.913265,
+    27_545_768_132.103878,
     2_730_000_000,
 ]
 EXCEL_SALVAGE = 2_730_000_000.0
@@ -318,14 +343,14 @@ def validate() -> None:
     print(f"VPN      excel={EXCEL_VPN:,.4f}")
     print(f"VPN diff       {res.vpn - EXCEL_VPN:,.6f}")
 
-    print("\nFCL unlevered (row 63), model vs excel:")
-    for k, (m, e) in enumerate(zip(res.fcl_unlevered, EXCEL_FCL63)):
+    print("\nFCL unlevered (row 64), model vs excel:")
+    for k, (m, e) in enumerate(zip(res.fcl_unlevered, EXCEL_FCL64)):
         flag = "OK" if abs(m - e) < 1.0 else "MISMATCH"
         print(f"  year {k:>2}: model={m:>22,.2f}  excel={e:>22,.2f}  [{flag}]")
 
     assert abs(res.wacc - EXCEL_WACC) < 1e-12, "WACC mismatch"
     assert abs(res.salvage - EXCEL_SALVAGE) < 1.0, "Salvage mismatch"
-    for m, e in zip(res.fcl_unlevered, EXCEL_FCL63):
+    for m, e in zip(res.fcl_unlevered, EXCEL_FCL64):
         assert abs(m - e) < 1.0, "FCL stream mismatch"
     assert abs(res.vpn - EXCEL_VPN) < 1.0, "VPN mismatch"
     print("\nAll checks passed: model reproduces Excel's VPN.")
@@ -345,6 +370,8 @@ def sensitivity_check() -> None:
         "cxc_dias -10 days": replace(base, cxc_dias=base.cxc_dias - 10),
         "cxp_dias +10 days": replace(base, cxp_dias=base.cxp_dias + 10),
         "g_real_precio +1pp": replace(base, g_real_precio=base.g_real_precio + 0.01),
+        "comisiones -1pp": replace(base, pct_comisiones=base.pct_comisiones - 0.01),
+        "seguro -1pp": replace(base, pct_seguro=base.pct_seguro - 0.01),
         "cantidades +10%": replace(base, cantidades=[q * 1.1 for q in base.cantidades]),
         "pct_d -> 0.2 (pct_e 0.8)": replace(base, pct_d=0.2, pct_e=0.8),
     }

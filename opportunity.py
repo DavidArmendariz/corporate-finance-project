@@ -23,9 +23,9 @@ import openpyxl
 from model import N_YEARS, WORKBOOK_PATH, compute_vpn, load_fixed_params
 from optimize import build_bounds, vector_to_levers
 
-LEVER_NAMES = ["%D", "Costo MP", "CXC días", "CXP días", "Crec. real"] + [
-    f"Cant Año {j + 1}" for j in range(N_YEARS)
-]
+LEVER_NAMES = [
+    "%D", "Costo MP", "CXC días", "CXP días", "Crec. real", "Comisiones", "Seguro %",
+] + [f"Cant Año {j + 1}" for j in range(N_YEARS)]
 
 
 def read_hurdle(path: str = WORKBOOK_PATH) -> float:
@@ -40,6 +40,8 @@ def base_vector(base) -> list[float]:
         base.cxc_dias,
         base.cxp_dias,
         base.g_real_precio,
+        base.pct_comisiones,
+        base.pct_seguro,
         *base.cantidades,
     ]
 
@@ -102,9 +104,9 @@ def minimal_effort(base_vec, target_vec, fixed, hurdle, seed_lambda):
 
 def _fmt(i: int, v: float) -> str:
     """Format a lever value: fractions as %, money/quantities with commas, days with 1 decimal."""
-    if i in (0, 4):          # %D, Crec. real -> percentage
+    if i in (0, 4, 5, 6):    # %D, Crec. real, Comisiones, Seguro % -> percentage
         return f"{v:.2%}"
-    if i in (1,) or i >= 5:  # Costo MP, Cantidades -> integer with commas
+    if i == 1 or i >= 7:     # Costo MP, Cantidades -> integer with commas
         return f"{v:,.0f}"
     return f"{v:,.1f}"        # CXC / CXP days
 
@@ -126,8 +128,8 @@ def print_plan(title, progress, base_vec, target_vec, fixed, hurdle) -> None:
 def solo_diagnostic(base_vec, target_vec, fixed, hurdle) -> None:
     """Can a single lever, alone at its reasonable limit, clear the hurdle?"""
     print("\n=== Single-lever check (only that lever at its reasonable limit) ===")
-    groups = {name: [i] for i, name in enumerate(LEVER_NAMES[:5])}
-    groups["Cantidades (all yrs)"] = list(range(5, 5 + N_YEARS))
+    groups = {name: [i] for i, name in enumerate(LEVER_NAMES[:7])}
+    groups["Cantidades (all yrs)"] = list(range(7, 7 + N_YEARS))
     for name, idxs in groups.items():
         v = list(base_vec)
         for i in idxs:

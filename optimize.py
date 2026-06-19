@@ -3,8 +3,9 @@
 SCAFFOLD ONLY — this is not executed yet. It documents the decision vector,
 the objective, and the constraints so the optimization step can be run later.
 
-Decision vector (15 dims):
-    [pct_d, costo_mp_base, cxc_dias, cxp_dias, g_real_precio, q1..q10]
+Decision vector (17 dims):
+    [pct_d, costo_mp_base, cxc_dias, cxp_dias, g_real_precio,
+     pct_comisiones, pct_seguro, q1..q10]
 
 Note pct_e is NOT a free variable: the constraint %E + %D == 1 is enforced by
 construction (pct_e = 1 - pct_d), which removes the equality constraint entirely.
@@ -35,7 +36,9 @@ I_COSTO_MP = 1
 I_CXC = 2
 I_CXP = 3
 I_G_PRECIO = 4
-I_CANT0 = 5  # cantidades start here; 10 values follow
+I_COMIS = 5
+I_SEGURO = 6
+I_CANT0 = 7  # cantidades start here; 10 values follow
 
 
 def vector_to_levers(x) -> Levers:
@@ -47,6 +50,8 @@ def vector_to_levers(x) -> Levers:
         cxc_dias=x[I_CXC],
         cxp_dias=x[I_CXP],
         g_real_precio=x[I_G_PRECIO],
+        pct_comisiones=x[I_COMIS],
+        pct_seguro=x[I_SEGURO],
         cantidades=list(x[I_CANT0 : I_CANT0 + N_YEARS]),
     )
 
@@ -67,6 +72,8 @@ def build_bounds():
         (30.0, 95.0),           # cxc_dias: min 30 days, cannot exceed base 95
         (20.0, 90.0),           # cxp_dias: from base 20 up to max 90
         (0.035, 0.06),          # g_real_precio: from base 3.5% up to 6%
+        (0.01, 0.03),           # pct_comisiones: base 2%, range 1%–3%
+        (0.05, 0.15),           # pct_seguro: base 10%, range 5%–15%
     ]
     # Cantidades: Año 1 <= 1500; Año 2..10 <= 5000; all >= 0
     bounds.append((0.0, 1500.0))
@@ -86,6 +93,8 @@ def _print_levers(best: Levers, fixed) -> None:
     print(f"  cxc_dias      = {best.cxc_dias:.2f}")
     print(f"  cxp_dias      = {best.cxp_dias:.2f}")
     print(f"  g_real_precio = {best.g_real_precio:.4%}")
+    print(f"  pct_comisiones= {best.pct_comisiones:.4%}")
+    print(f"  pct_seguro    = {best.pct_seguro:.4%}")
     print(f"  cantidades    = {[round(float(q), 1) for q in best.cantidades]}")
 
 

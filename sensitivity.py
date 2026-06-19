@@ -39,6 +39,10 @@ def scalar_sensitivities(base: Levers, fixed: FixedParams):
          lambda v: replace(base, cxp_dias=v), base.cxp_dias, 1e-3, 1.0, 1.0),
         ("Crec. real precio", "per +1pp",
          lambda v: replace(base, g_real_precio=v), base.g_real_precio, 1e-5, 0.01, 1.0),
+        ("Comisiones", "per +1pp",
+         lambda v: replace(base, pct_comisiones=v), base.pct_comisiones, 1e-5, 0.01, 1.0),
+        ("Seguro %", "per +1pp",
+         lambda v: replace(base, pct_seguro=v), base.pct_seguro, 1e-5, 0.01, 1.0),
     ]
     rows = []
     for name, unit, setter, x, h, scale, step in specs:

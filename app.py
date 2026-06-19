@@ -72,6 +72,8 @@ def levers_to_state(lev: Levers) -> dict:
         "cxc": float(lev.cxc_dias),
         "cxp": float(lev.cxp_dias),
         "g": float(lev.g_real_precio),
+        "comis": float(lev.pct_comisiones),
+        "seg": float(lev.pct_seguro),
     }
     for j, q in enumerate(lev.cantidades):
         s[Q_KEYS[j]] = int(round(q))
@@ -87,6 +89,8 @@ def state_to_levers() -> Levers:
         cxc_dias=st.session_state["cxc"],
         cxp_dias=st.session_state["cxp"],
         g_real_precio=st.session_state["g"],
+        pct_comisiones=st.session_state["comis"],
+        pct_seguro=st.session_state["seg"],
         cantidades=[float(st.session_state[k]) for k in Q_KEYS],
     )
 
@@ -132,6 +136,10 @@ st.sidebar.caption("reasonable: 20–90")
 st.sidebar.slider("Crecimiento real precio", 0.0, 0.15, step=0.005, key="g",
                   format="%.3f")
 st.sidebar.caption("reasonable: 3.5%–6%")
+st.sidebar.slider("Comisiones", 0.01, 0.03, step=0.001, key="comis", format="%.3f")
+st.sidebar.caption("base 2%  ·  reasonable: 1%–3%")
+st.sidebar.slider("Porcentaje de seguro", 0.05, 0.15, step=0.005, key="seg", format="%.3f")
+st.sidebar.caption("base 10%  ·  reasonable: 5%–15%  ·  solo afecta el EBIT del Año 1")
 st.sidebar.markdown("**Cantidades (ton/año)**")
 for j in range(N_YEARS):
     cap = "≤1500" if j == 0 else "≤5000"
