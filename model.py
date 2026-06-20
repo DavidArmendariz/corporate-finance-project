@@ -11,8 +11,8 @@ Non-obvious behavior replicated deliberately: `%D` (porcentaje de deuda) affects
 VPN through TWO channels:
   - the WACC discount rate, and
   - `Impuestos por pagar` (row 37 = row 29), which is computed on EBT
-    (= EBIT - Gastos financieros). Gastos financieros come from the Bancos
-    debt schedule sized by `%D`, so debt flows into the FCL via KTNO.
+    (= EBIT - Gastos financieros). Gastos financieros come from the Bonos
+    corporate-bond schedule sized by `%D`, so debt flows into the FCL via KTNO.
 NOPAT itself uses the *unlevered* operative tax (row 50). The model keeps this
 mix of levered/unlevered tax exactly as the sheet does.
 
@@ -60,22 +60,16 @@ class FixedParams:
     de_sector: float                # WACC!B5 (D/E of the sector)
     bono_yankee: float              # WACC!B11
     tes_cop: float                  # WACC!B13
-    # Bancos (cost of debt)
-    dtf: float                      # Bancos!B4
-    spread: float                   # Bancos!B5
+    # Bonos (corporate bond — cost of debt and the base annual schedule)
+    kd_cop: float                   # WACC!B17 == Bonos!D17, effective annual cost of debt
+    pct_d_base: float               # Datos!C35, the %D the bond series below were computed at
+    bond_cupones_mm: list[float]    # Bonos!G27:G36, annual coupons (millones de COP)
+    bond_servicio_mm: list[float]   # Bonos!I27:I36, annual pago total (millones de COP)
+    bond_deuda_mm: list[float]      # Bonos!J27:J36, year-end balance (millones de COP)
 
     @property
     def capex_total(self) -> float:
         return self.capex_total_mm * 1_000_000
-
-    @property
-    def kd(self) -> float:
-        """Bancos!B10 — effective annual cost of debt. Independent of %D."""
-        tasa_ta = self.dtf + self.spread          # B6
-        trim_ant = tasa_ta / 4                     # B7
-        trim_venc = trim_ant / (1 - trim_ant)      # B8
-        nominal_anual = trim_venc * 4              # B9
-        return (1 + nominal_anual / 4) ** 4 - 1    # B10
 
     @property
     def salvage(self) -> float:
@@ -107,11 +101,11 @@ class Levers:
 def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
     """Read constants (FixedParams) and the base-case lever values from the workbook."""
     wb = openpyxl.load_workbook(path, data_only=True)
-    es, d, w, b, nom = (
+    es, d, w, bonos, nom = (
         wb["Estado de resultados"],
         wb["Datos"],
         wb["WACC"],
-        wb["Bancos"],
+        wb["Bonos"],
         wb["Nómina"],
     )
 
@@ -143,8 +137,11 @@ def load_fixed_params(path: str = WORKBOOK_PATH) -> tuple[FixedParams, Levers]:
         de_sector=w["B5"].value,
         bono_yankee=w["B11"].value,
         tes_cop=w["B13"].value,
-        dtf=b["B4"].value,
-        spread=b["B5"].value,
+        kd_cop=w["B17"].value,
+        pct_d_base=d["C35"].value,
+        bond_cupones_mm=[bonos.cell(row=r, column=7).value for r in range(27, 37)],   # G27:G36
+        bond_servicio_mm=[bonos.cell(row=r, column=9).value for r in range(27, 37)],  # I27:I36
+        bond_deuda_mm=[bonos.cell(row=r, column=10).value for r in range(27, 37)],    # J27:J36
     )
 
     base_levers = Levers(
@@ -204,70 +201,35 @@ def nomina_bases(roster: list[NominaRole]) -> tuple[float, float]:
 
 
 def debt_schedule_interest(pct_d: float, fixed: FixedParams) -> list[float]:
-    """Return the 10 annual interest figures used by ES gastos financieros
-    (Bancos!J20:J29, in millones de COP).
+    """Return the 10 annual bond coupons (Bonos!G27:G36, in millones de COP), scaled to %D.
 
-    Loan = Datos!C10 * %D (in millones). Quarterly vencido rate from Bancos!B8.
-    Amortization: Año 1 = grace (0); Años 2-9 = 10%/yr (2.5%/quarter);
-    Año 10 = 20%/yr (5%/quarter); interest is charged on the period's opening
-    balance.
+    The Bonos sheet computes a semi-annual, IPC-indexed coupon schedule for a bullet bond
+    (principal repaid in full at Año 10). Its annual summary is cached in the workbook at
+    the base `%D = Datos!C35`. The bond monto = Datos!C10 * %D, and every coupon is
+    `saldo * tasa_periodica` with `saldo` constant (bullet), so coupons scale LINEARLY with
+    `%D`. We read the base series once and rescale, which is exact and avoids replicating
+    the sheet's TODAY()-based day-count (which would drift by calendar date).
 
-    Each year's interest sums ALL four of its quarters (Bancos!J20 = SUM(D20:D23),
-    etc.). The result feeds `ES!D27 = TRANSPOSE(Bancos!J20:J29)*100000` (see
-    compute_model for the ×100000 scaling), which reproduces Excel's VPN exactly.
+    The result feeds `ES!D27 = TRANSPOSE(Bonos!G27:G36)*1000000` (see compute_model for the
+    ×1e6 scaling), which reproduces Excel's VPN exactly.
     """
-    loan = fixed.capex_total_mm * pct_d  # Bancos!B12, in millones
-    tasa_ta = fixed.dtf + fixed.spread
-    trim_venc = (tasa_ta / 4) / (1 - tasa_ta / 4)  # B8
-
-    quarterly = [0.0] * 40
-    saldo = loan
-    for q in range(40):  # 0-indexed quarters (Bancos rows 20..59)
-        year = q // 4 + 1  # Bancos column B (1..10)
-        quarterly[q] = saldo * trim_venc  # interest on opening balance
-        if year == 1:
-            amort = 0.0
-        elif year < 10:
-            amort = loan * 0.1 / 4
-        else:
-            amort = loan * 0.2 / 4
-        saldo -= amort
-
-    annual_interest = [0.0] * N_YEARS
-    for q in range(40):
-        annual_interest[q // 4] += quarterly[q]
-    return annual_interest
+    scale = pct_d / fixed.pct_d_base
+    return [c * scale for c in fixed.bond_cupones_mm]
 
 
 def debt_schedule_annual(pct_d: float, fixed: FixedParams) -> tuple[list[float], list[float]]:
-    """Return (servicio_deuda, deuda) per year, in COP — Bancos RESUMEN ANUAL L20:L29 / M20:M29.
+    """Return (servicio_deuda, deuda) per year, in COP — Bonos RESUMEN ANUAL I27:I36 / J27:J36.
 
-    `servicio` (Pago Total, col L) = full annual interest + amortization, summing ALL four
-    quarters of every year (no row-22 omission, unlike `debt_schedule_interest`). `deuda`
-    (Saldo Final, col M) = year-end balance = the last quarter's closing balance.
-    Both feed ES rows 87 (servicio) and 89 (deuda), scaled by 1e6.
+    `servicio` (Pago Total, col I) = annual coupons + principal amortization (the bullet
+    repayment lands in Año 10). `deuda` (col J) = year-end balance (the issue amount through
+    Año 9, then 0). Both scale linearly with `%D` (bond monto = Datos!C10 * %D), so we read
+    the base series and rescale, then convert millones de COP to COP (×1e6). They feed ES
+    rows 87 (servicio) and 89 (deuda).
     """
-    loan = fixed.capex_total_mm * pct_d  # Bancos!B12, in millones
-    tasa_ta = fixed.dtf + fixed.spread
-    trim_venc = (tasa_ta / 4) / (1 - tasa_ta / 4)  # B8
-
-    servicio = [0.0] * N_YEARS
-    deuda = [0.0] * N_YEARS
-    saldo = loan
-    for q in range(40):
-        year = q // 4 + 1
-        interes = saldo * trim_venc
-        if year == 1:
-            amort = 0.0
-        elif year < 10:
-            amort = loan * 0.1 / 4
-        else:
-            amort = loan * 0.2 / 4
-        servicio[year - 1] += interes + amort
-        saldo -= amort
-        deuda[year - 1] = saldo  # last write per year = year-end Saldo Final
-
-    return [s * 1e6 for s in servicio], [d * 1e6 for d in deuda]
+    scale = pct_d / fixed.pct_d_base
+    servicio = [s * scale * 1_000_000 for s in fixed.bond_servicio_mm]
+    deuda = [d * scale * 1_000_000 for d in fixed.bond_deuda_mm]
+    return servicio, deuda
 
 
 # Per-year indicators graphed in the app (order matches the dashboard layout).
@@ -302,7 +264,7 @@ def wacc(pct_e: float, pct_d: float, fixed: FixedParams) -> float:
     deval = fixed.tes_cop - fixed.bono_yankee                    # B14
     ke_usd = fixed.rf + beta_proyecto * erp + rp                 # B15
     ke_cop = (1 + ke_usd) * (1 + deval) - 1                      # B16
-    return ke_cop * pct_e + pct_d * (1 - tax) * fixed.kd          # B18
+    return ke_cop * pct_e + pct_d * (1 - tax) * fixed.kd_cop      # B18
 
 
 @dataclass
@@ -369,8 +331,8 @@ def compute_model(levers: Levers, fixed: FixedParams) -> ModelResult:
 
     # --- Levered branch feeding KTNO via Impuestos por pagar ---
     interest_mm = debt_schedule_interest(levers.pct_d, fixed)
-    # ES!D27 = TRANSPOSE(Bancos!J20:J29)*100000 (the sheet scales by 1e5, not 1e6).
-    gastos_fin = [interest_mm[j] * 100_000 for j in range(n)]             # row 27
+    # ES!D27 = TRANSPOSE(Bonos!G27:G36)*1000000 (cupones are in millones de COP).
+    gastos_fin = [interest_mm[j] * 1_000_000 for j in range(n)]           # row 27
     ebt = [ebit[j] - gastos_fin[j] for j in range(n)]                    # row 28
     impuestos_por_pagar = [max(0.0, ebt[j] * tax) for j in range(n)]     # rows 29/37
 
@@ -443,20 +405,20 @@ def compute_vpn(levers: Levers, fixed: FixedParams) -> float:
 
 
 # --- Cached Excel values used to validate the reimplementation ---
-EXCEL_VPN = 30_543_121_707.124863  # ES!C68
-EXCEL_WACC = 0.2038878535096088    # WACC!B18
+EXCEL_VPN = -2_987_859_420.2771225  # ES!C68
+EXCEL_WACC = 0.18189262150651486    # WACC!B18
 EXCEL_FCL64 = [                     # ES!C64:N64 (years 0..11)
     -14_000_000_000,
-    563_061_161.6772768,
-    9_322_293_156.437101,
-    10_284_879_024.385878,
-    11_977_118_379.842709,
-    4_094_133_442.364683,
-    16_060_378_343.514023,
-    18_476_932_116.974094,
-    21_220_267_623.36258,
-    24_353_026_023.085163,
-    27_908_241_947.262756,
+    -581_333_333.3333333,
+    842_844_525.3333333,
+    1_040_281_227.2254083,
+    2_377_727_442.2270985,
+    -6_564_482_256.972959,
+    3_815_583_986.8138485,
+    8_293_798_510.254985,
+    9_735_704_794.08979,
+    11_239_395_421.421486,
+    12_949_635_299.331955,
     2_730_000_000,
 ]
 EXCEL_SALVAGE = 2_730_000_000.0
