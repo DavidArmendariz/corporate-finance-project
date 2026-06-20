@@ -12,8 +12,6 @@ tornado update in real time.
 - Provides preset scenarios in the sidebar:
   - **Base** — the base case read from the workbook.
   - **Óptimo** — levers that maximize VPN within reasonable bounds.
-  - **Opp. uniforme** — uniform effort across levers to just clear the hurdle.
-  - **Opp. mínimo** — minimal total effort to clear the hurdle.
 - Charts the free cash flow (nominal and discounted) per year and a sensitivity tornado.
 
 ## Project layout
