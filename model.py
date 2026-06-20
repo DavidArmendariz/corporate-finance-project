@@ -61,7 +61,7 @@ class FixedParams:
     bono_yankee: float              # WACC!B11
     tes_cop: float                  # WACC!B13
     # Bonos (corporate bond — cost of debt and the base annual schedule)
-    kd_cop: float                   # WACC!B17 == Bonos!D17, effective annual cost of debt
+    kd_cop: float                   # WACC!B17 == Bonos!G19, effective annual (all-in) cost of debt
     pct_d_base: float               # Datos!C35, the %D the bond series below were computed at
     bond_cupones_mm: list[float]    # Bonos!G27:G36, annual coupons (millones de COP)
     bond_servicio_mm: list[float]   # Bonos!I27:I36, annual pago total (millones de COP)
@@ -405,20 +405,20 @@ def compute_vpn(levers: Levers, fixed: FixedParams) -> float:
 
 
 # --- Cached Excel values used to validate the reimplementation ---
-EXCEL_VPN = -2_987_859_420.2771225  # ES!C68
-EXCEL_WACC = 0.18189262150651486    # WACC!B18
+EXCEL_VPN = 26_006_485_925.50576    # ES!C68
+EXCEL_WACC = 0.2095710223210821     # WACC!B18
 EXCEL_FCL64 = [                     # ES!C64:N64 (years 0..11)
     -14_000_000_000,
-    -581_333_333.3333333,
-    842_844_525.3333333,
-    1_040_281_227.2254083,
-    2_377_727_442.2270985,
-    -6_564_482_256.972959,
-    3_815_583_986.8138485,
-    8_293_798_510.254985,
-    9_735_704_794.08979,
-    11_239_395_421.421486,
-    12_949_635_299.331955,
+    234_917_500,
+    8_356_562_741.927637,
+    9_643_601_779.154709,
+    11_237_399_677.498337,
+    3_245_335_551.0212708,
+    15_086_914_379.436646,
+    17_370_356_661.762787,
+    19_957_327_289.789864,
+    22_914_435_580.929985,
+    26_266_670_697.469173,
     2_730_000_000,
 ]
 EXCEL_SALVAGE = 2_730_000_000.0
