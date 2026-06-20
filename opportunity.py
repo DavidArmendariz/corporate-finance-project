@@ -1,8 +1,8 @@
 """Gentlest plan to beat the opportunity cost.
 
 The `Costo de oportunidad` sheet values the alternative to the project (renting the
-bodega), with present value `Costo de oportunidad!B16`. The project is only worth
-doing if its VPN clears that hurdle.
+bodega) as an after-tax cash flow, with present value `Costo de oportunidad!B19`.
+The project is only worth doing if its VPN clears that hurdle.
 
 This finds reasonable decision-variable values — staying within the agreed bounds
 (`optimize.build_bounds`) and avoiding extreme corners — that bring VPN up to the
@@ -30,7 +30,7 @@ LEVER_NAMES = [
 
 def read_hurdle(path: str = WORKBOOK_PATH) -> float:
     wb = openpyxl.load_workbook(path, data_only=True)
-    return wb["Costo de oportunidad"]["B16"].value
+    return wb["Costo de oportunidad"]["B19"].value
 
 
 def base_vector(base) -> list[float]:

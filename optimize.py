@@ -67,7 +67,7 @@ def make_objective(fixed):
 def build_bounds():
     """Bounds matching the user's stated business constraints."""
     bounds = [
-        (0.001, 0.60),          # pct_d  (capped at 60% for a financeable structure)
+        (0.001, 0.80),          # pct_d  (up to the chosen 80% debt structure)
         (1_600_000, 2_000_000), # costo_mp_base: floor -20%, cannot exceed base
         (30.0, 95.0),           # cxc_dias: min 30 days, cannot exceed base 95
         (20.0, 90.0),           # cxp_dias: from base 20 up to max 90
