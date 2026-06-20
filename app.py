@@ -25,16 +25,8 @@ from model import (
     load_nomina_roster,
     nomina_bases,
 )
-from opportunity import (
-    base_vector,
-    improving_targets,
-    minimal_effort,
-    read_hurdle,
-    uniform_effort,
-    value_vector,
-    vector_to_levers,
-)
-from optimize import build_bounds, optimal_levers
+from opportunity import read_hurdle
+from optimize import optimal_levers
 from sensitivity import cantidades_sensitivities, scalar_sensitivities
 
 st.set_page_config(page_title="VPN del Proyecto", layout="wide")
@@ -94,22 +86,6 @@ def get_roster():
 def get_optimum_levers():
     fixed, _ = get_fixed_and_base()
     return optimal_levers(fixed)
-
-
-@st.cache_data
-def get_opportunity_levers():
-    """Return (uniform_plan_levers, minimal_plan_levers) or (None, None) if infeasible."""
-    fixed, base = get_fixed_and_base()
-    hurdle = get_hurdle()
-    bv = base_vector(base)
-    tv = improving_targets(bv, build_bounds(), fixed)
-    if compute_vpn(vector_to_levers(value_vector(1.0, bv, tv)), fixed) < hurdle:
-        return None, None
-    lam = uniform_effort(bv, tv, fixed, hurdle)
-    uni = vector_to_levers(value_vector(lam, bv, tv))
-    p = minimal_effort(bv, tv, fixed, hurdle, seed_lambda=lam)
-    mini = vector_to_levers(value_vector(list(p), bv, tv))
-    return uni, mini
 
 
 # ---------------------------------------------------------------- state helpers
@@ -193,11 +169,6 @@ if c1.button("Base", use_container_width=True):
     apply_preset(base)
 if c2.button("Óptimo", use_container_width=True):
     apply_preset(get_optimum_levers())
-uni, mini = get_opportunity_levers()
-if c1.button("Opp. uniforme", use_container_width=True, disabled=uni is None):
-    apply_preset(uni)
-if c2.button("Opp. mínimo", use_container_width=True, disabled=mini is None):
-    apply_preset(mini)
 
 st.sidebar.header("Variables de decisión")
 st.sidebar.slider("%D (deuda)", 0.0, 1.0, step=0.01, key="pct_d",
